@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+feedparser
+requests
+httpx
+pytest
+ruff
+setproctitle

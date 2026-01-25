@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent
+TEST_OUT = PROJECT_ROOT / "output" / "testing"
+
+
+# ##################################################################
+# run command
+# execute a shell command and return exit code
+def run_command(cmd: list[str]) -> int:
+    return subprocess.call(cmd, cwd=PROJECT_ROOT)
+
+
+# ##################################################################
+# command test
+# run pytest for a specific test target
+def command_test(args: argparse.Namespace) -> int:
+    TEST_OUT.mkdir(parents=True, exist_ok=True)
+    target = args.target
+    log_name = target.replace("/", "_").replace("::", "_") + ".log"
+    log_path = TEST_OUT / log_name
+
+    cmd = ["pytest", "-q", target, "--maxfail=1", "--disable-warnings"]
+    print(f"Running: {' '.join(cmd)}")
+    print(f"Log: {log_path}")
+
+    with open(log_path, "w") as f:
+        result = subprocess.call(cmd, cwd=PROJECT_ROOT, stdout=f, stderr=subprocess.STDOUT)
+
+    if result != 0:
+        with open(log_path) as f:
+            print(f.read())
+
+    return result
+
+
+# ##################################################################
+# command lint
+# run ruff linter
+def command_lint(args: argparse.Namespace) -> int:
+    return run_command(["ruff", "check", "--line-length", "120"])
+
+
+# ##################################################################
+# command check
+# run full test suite via dazpycheck
+def command_check(args: argparse.Namespace) -> int:
+    return run_command(["dazpycheck"])
+
+
+# ##################################################################
+# command feed add
+# add a new RSS feed via CLI
+def command_feed_add(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.cli import feed_add
+    return feed_add(args.url, args.name)
+
+
+# ##################################################################
+# command feed list
+# list all RSS feeds via CLI
+def command_feed_list(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.cli import feed_list
+    return feed_list()
+
+
+# ##################################################################
+# command feed delete
+# delete an RSS feed via CLI
+def command_feed_delete(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.cli import feed_delete
+    return feed_delete(args.id)
+
+
+# ##################################################################
+# command stats
+# show database statistics
+def command_stats(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.cli import stats
+    return stats()
+
+
+# ##################################################################
+# command monitor
+# tail the server logs
+def command_monitor(args: argparse.Namespace) -> int:
+    return run_command(["auto", "log", "news-feed", "--tail"])
+
+
+# ##################################################################
+# command test discord send
+# send the highest rated news item to discord for testing formatting
+def command_test_discord_send(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.database import get_session
+    from src.models import FeedEntry, Feed
+    from src.scoring import extract_link_from_xml
+    from src.discord_sender import extract_title_from_xml, extract_summary_from_xml, send_news_item
+
+    with get_session() as session:
+        entry = (
+            session.query(FeedEntry)
+            .filter(FeedEntry.score.isnot(None))
+            .order_by(FeedEntry.score.desc())
+            .first()
+        )
+
+        if entry is None:
+            print("No scored entries found")
+            return 1
+
+        feed = session.query(Feed).filter(Feed.id == entry.feed_id).first()
+        feed_name = feed.name if feed else "Unknown"
+
+        title = extract_title_from_xml(entry.xml_content) or entry.guid
+        link = extract_link_from_xml(entry.xml_content) or entry.guid
+        summary = extract_summary_from_xml(entry.xml_content)
+        score = entry.score
+
+        print(f"Sending to Discord:")
+        print(f"  Title: {title}")
+        print(f"  Score: {score:.1f}")
+        print(f"  Feed: {feed_name}")
+        print(f"  Link: {link}")
+
+        if send_news_item(title, link, score, feed_name, summary):
+            print("Sent successfully!")
+            return 0
+        else:
+            print("Failed to send")
+            return 1
+
+
+# ##################################################################
+# command export rss
+# export RSS XML for entries above a score threshold
+def command_export_rss(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.cli import export_rss
+    return export_rss(args.min_score, args.limit, args.title, args.description, args.link)
+
+
+# ##################################################################
+# command update trained
+# update scores for entries in the training set
+def command_update_trained(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.cli import update_trained
+    return update_trained()
+
+
+# ##################################################################
+# main
+# parse arguments and dispatch to appropriate command
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="run", description="News Feed CLI")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    # test command
+    p_test = sub.add_parser("test", help="Run a specific test target")
+    p_test.add_argument("target", help="Test target (e.g. src/models_test.py::test_feed_creation)")
+    p_test.set_defaults(func=command_test)
+
+    # lint command
+    p_lint = sub.add_parser("lint", help="Run linter")
+    p_lint.set_defaults(func=command_lint)
+
+    # check command
+    p_check = sub.add_parser("check", help="Run full test suite (dazpycheck)")
+    p_check.set_defaults(func=command_check)
+
+    # feed commands
+    p_feed = sub.add_parser("feed", help="Feed management commands")
+    feed_sub = p_feed.add_subparsers(dest="feed_cmd", required=True)
+
+    p_feed_add = feed_sub.add_parser("add", help="Add a new feed")
+    p_feed_add.add_argument("url", help="RSS feed URL")
+    p_feed_add.add_argument("--name", help="Human-readable name for the feed")
+    p_feed_add.set_defaults(func=command_feed_add)
+
+    p_feed_list = feed_sub.add_parser("list", help="List all feeds")
+    p_feed_list.set_defaults(func=command_feed_list)
+
+    p_feed_delete = feed_sub.add_parser("delete", help="Delete a feed")
+    p_feed_delete.add_argument("id", type=int, help="Feed ID to delete")
+    p_feed_delete.set_defaults(func=command_feed_delete)
+
+    # stats command
+    p_stats = sub.add_parser("stats", help="Show database statistics")
+    p_stats.set_defaults(func=command_stats)
+
+    # monitor command
+    p_monitor = sub.add_parser("monitor", help="Tail the server logs")
+    p_monitor.set_defaults(func=command_monitor)
+
+    # test-discord-send command
+    p_discord = sub.add_parser("test-discord-send", help="Send highest rated article to Discord")
+    p_discord.set_defaults(func=command_test_discord_send)
+
+    # export-rss command
+    p_export = sub.add_parser("export-rss", help="Export RSS XML for entries above a score threshold")
+    p_export.add_argument("--min-score", type=float, default=8.0, help="Minimum score threshold (default: 8.0)")
+    p_export.add_argument("--limit", type=int, default=100, help="Maximum entries to include (default: 100)")
+    p_export.add_argument("--title", default="Curated Tech News", help="RSS channel title")
+    p_export.add_argument("--description", default="AI-curated tech news. These are links from around the web - none of this is my own work.", help="RSS channel description")
+    p_export.add_argument("--link", default="https://darren.insidemind.com.au/news.html", help="RSS channel link")
+    p_export.set_defaults(func=command_export_rss)
+
+    # update-trained command
+    p_update_trained = sub.add_parser("update-trained", help="Update scores for entries in the training set")
+    p_update_trained.set_defaults(func=command_update_trained)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
