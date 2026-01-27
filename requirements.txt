@@ -7,3 +7,5 @@ httpx
 pytest
 ruff
 setproctitle
+discord.py
+keyring
