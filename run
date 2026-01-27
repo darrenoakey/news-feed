@@ -141,11 +141,11 @@ def command_test_discord_send(args: argparse.Namespace) -> int:
 
 # ##################################################################
 # command export rss
-# export RSS XML for entries above a score threshold
+# export RSS XML for entries within a score range
 def command_export_rss(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(PROJECT_ROOT))
     from src.cli import export_rss
-    return export_rss(args.min_score, args.limit, args.title, args.description, args.link)
+    return export_rss(args.min_score, args.limit, args.title, args.description, args.link, args.max_score)
 
 
 # ##################################################################
@@ -206,8 +206,9 @@ def main(argv: list[str]) -> int:
     p_discord.set_defaults(func=command_test_discord_send)
 
     # export-rss command
-    p_export = sub.add_parser("export-rss", help="Export RSS XML for entries above a score threshold")
+    p_export = sub.add_parser("export-rss", help="Export RSS XML for entries within a score range")
     p_export.add_argument("--min-score", type=float, default=8.0, help="Minimum score threshold (default: 8.0)")
+    p_export.add_argument("--max-score", type=float, default=None, help="Maximum score threshold (exclusive, default: none)")
     p_export.add_argument("--limit", type=int, default=100, help="Maximum entries to include (default: 100)")
     p_export.add_argument("--title", default="Curated Tech News", help="RSS channel title")
     p_export.add_argument("--description", default="AI-curated tech news. These are links from around the web - none of this is my own work.", help="RSS channel description")

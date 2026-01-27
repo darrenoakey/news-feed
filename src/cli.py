@@ -169,7 +169,9 @@ def stats() -> int:
 # export rss
 # generate RSS 2.0 XML for entries above a score threshold
 # deduplicates by both URL and title (same story from different sources)
-def export_rss(min_score: float, limit: int, title: str, description: str, link: str) -> int:
+def export_rss(
+    min_score: float, limit: int, title: str, description: str, link: str, max_score: Optional[float] = None
+) -> int:
     import xml.etree.ElementTree as ET
     from datetime import datetime, timezone
 
@@ -188,15 +190,15 @@ def export_rss(min_score: float, limit: int, title: str, description: str, link:
     with get_session() as session:
         # Fetch more entries than needed to account for duplicates
         # We'll dedupe in Python since title/URL are in xml_content
-        entries = (
+        query = (
             session.query(FeedEntry)
             .join(Feed)
             .filter(FeedEntry.score.isnot(None))
             .filter(FeedEntry.score >= min_score)
-            .order_by(FeedEntry.discovered_at.desc())
-            .limit(limit * 5)  # Fetch extra to handle duplicates
-            .all()
         )
+        if max_score is not None:
+            query = query.filter(FeedEntry.score < max_score)
+        entries = query.order_by(FeedEntry.discovered_at.desc()).limit(limit * 5).all()
 
         # Build RSS 2.0 XML
         rss = ET.Element("rss", version="2.0")
