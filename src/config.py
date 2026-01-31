@@ -32,7 +32,7 @@ SERVER_PORT = 19100
 # ##################################################################
 # scoring api settings
 # host and port for the news-score API
-SCORING_API_URL = "http://localhost:19091"
+SCORING_API_URL = "http://10.0.0.46:19091"
 SCORING_WORKER_SLEEP_SECONDS = 60
 SCORING_API_TIMEOUT_SECONDS = 120
 
