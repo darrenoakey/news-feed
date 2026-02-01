@@ -212,49 +212,87 @@ def export_rss(
         )
         ET.SubElement(channel, "generator").text = "news-feed curated by Darren Oakey"
 
-        # Track seen URLs and titles for deduplication
-        seen_urls = set()
-        seen_titles = set()
-        item_count = 0
+        # First pass: collect entries and group by URL/title for deduplication with score averaging
+        # Key is (normalized_url, normalized_title), value is list of (entry, entry_root)
+        entry_groups: dict[tuple[Optional[str], Optional[str]], list[tuple[FeedEntry, ET.Element]]] = {}
 
         for entry in entries:
-            if item_count >= limit:
-                break
-
-            # Parse the stored XML to extract fields
             try:
                 entry_root = ET.fromstring(entry.xml_content)
             except ET.ParseError:
                 continue
 
-            # Extract title and link for deduplication
             title_elem = entry_root.find("title")
             link_elem = entry_root.find("link")
 
-            entry_title = title_elem.text.strip().lower() if title_elem is not None and title_elem.text else None
+            # Normalize and strip HTML from title for deduplication
+            # Use itertext() to get all text including from child elements (handles nested HTML tags)
+            raw_title = "".join(title_elem.itertext()) if title_elem is not None else None
+            entry_title = strip_html(raw_title).lower() if raw_title else None
             entry_link = link_elem.text.strip().lower() if link_elem is not None and link_elem.text else None
 
-            # Skip if we've seen this URL or title before
-            if entry_link and entry_link in seen_urls:
-                continue
-            if entry_title and entry_title in seen_titles:
-                continue
+            # Check if this matches an existing group by URL or title
+            matched_key = None
+            for existing_key, existing_entries in entry_groups.items():
+                # Get URL and title from the first entry in the group
+                _, existing_root = existing_entries[0]
+                existing_link_elem = existing_root.find("link")
+                existing_title_elem = existing_root.find("title")
+                existing_url = (
+                    existing_link_elem.text.strip().lower()
+                    if existing_link_elem is not None and existing_link_elem.text
+                    else None
+                )
+                existing_title_text = (
+                    "".join(existing_title_elem.itertext()) if existing_title_elem is not None else None
+                )
+                existing_title = strip_html(existing_title_text).lower() if existing_title_text else None
 
-            # Mark as seen
-            if entry_link:
-                seen_urls.add(entry_link)
-            if entry_title:
-                seen_titles.add(entry_title)
+                # Match by URL (primary)
+                if entry_link and existing_url and entry_link == existing_url:
+                    matched_key = existing_key
+                    break
+                # Match by title (secondary - catches same article from different sources)
+                if entry_title and existing_title and entry_title == existing_title:
+                    matched_key = existing_key
+                    break
+
+            if matched_key:
+                entry_groups[matched_key].append((entry, entry_root))
+            else:
+                # Use a unique key for new groups
+                group_key = (entry_link or f"notitle-{len(entry_groups)}", entry_title)
+                entry_groups[group_key] = [(entry, entry_root)]
+
+        # Second pass: output unique entries with averaged scores
+        item_count = 0
+        for group_key, group_entries in entry_groups.items():
+            if item_count >= limit:
+                break
+
+            # Use the first entry's data, but average scores
+            entry, entry_root = group_entries[0]
+
+            # Calculate average score from all duplicates
+            scores = [e.score for e, _ in group_entries if e.score is not None]
+            avg_score = sum(scores) / len(scores) if scores else None
 
             # Create RSS item
             item = ET.SubElement(channel, "item")
             item_count += 1
 
-            # Title
-            if title_elem is not None and title_elem.text:
-                ET.SubElement(item, "title").text = title_elem.text
+            # Title (strip HTML and normalize whitespace)
+            # Use itertext() to get all text including from child elements (handles nested HTML tags)
+            title_elem = entry_root.find("title")
+            if title_elem is not None:
+                raw_title = "".join(title_elem.itertext())
+                if raw_title:
+                    clean_title = strip_html(raw_title)
+                    if clean_title:
+                        ET.SubElement(item, "title").text = clean_title
 
             # Link
+            link_elem = entry_root.find("link")
             if link_elem is not None and link_elem.text:
                 ET.SubElement(item, "link").text = link_elem.text
 
@@ -276,9 +314,9 @@ def export_rss(
             # Source (the feed name)
             ET.SubElement(item, "source", url=entry.feed.url).text = entry.feed.name
 
-            # Score (for viewer display, RSS readers will ignore)
-            if entry.score is not None:
-                score_rounded = round(entry.score, 1)
+            # Score (averaged from duplicates, for viewer display)
+            if avg_score is not None:
+                score_rounded = round(avg_score, 1)
                 ET.SubElement(item, "score").text = str(score_rounded)
 
         # Output XML
