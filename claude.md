@@ -42,6 +42,13 @@ Registered with `auto` using `.venv/bin/python` (not system python3) to prevent 
 - `--max-score`: Exclusive upper bound (enables non-overlapping feeds)
 - Example: `--min-score 8 --max-score 9.5` gives scores in range [8, 9.5)
 
+### Deduplication and HTML Handling
+
+- **HTML stripping**: Titles and descriptions are stripped of HTML tags and normalized (uses `strip_html()`)
+- **Nested HTML**: Uses `itertext()` to extract text from nested elements (handles `<h1>Title</h1>` inside `<title>`)
+- **Deduplication**: Entries are deduplicated by URL (primary) OR exact title match (secondary)
+- **Score averaging**: When duplicates exist (same article from multiple feeds), their scores are averaged
+
 ## Testing
 
 ```bash
