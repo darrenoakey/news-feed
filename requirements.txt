@@ -9,3 +9,5 @@ ruff
 setproctitle
 discord.py
 keyring
+scikit-learn
+daz-agent-sdk

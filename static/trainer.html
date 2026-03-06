@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Title Classifier Trainer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
+
+.header { background: #16213e; padding: 16px 24px; border-bottom: 1px solid #0f3460; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.header h1 { font-size: 20px; color: #e94560; }
+.metrics-bar { display: flex; gap: 16px; flex-wrap: wrap; }
+.metric { text-align: center; }
+.metric .value { font-size: 22px; font-weight: 700; color: #e94560; }
+.metric .label { font-size: 11px; color: #888; text-transform: uppercase; }
+
+.stats-bar { background: #16213e; padding: 8px 24px; border-bottom: 1px solid #0f3460; display: flex; align-items: center; gap: 24px; font-size: 13px; color: #888; }
+.stats-bar .count { color: #e0e0e0; font-weight: 600; }
+#retrain-btn { margin-left: auto; padding: 6px 16px; background: #e94560; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+#retrain-btn:hover { background: #d63851; }
+#retrain-btn:disabled { background: #555; color: #888; cursor: not-allowed; }
+#other-all-btn { padding: 6px 16px; background: #555; color: #ccc; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+#other-all-btn:hover { background: #666; color: #fff; }
+
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+
+.card { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 16px; transition: opacity 0.3s; }
+.card.classified { opacity: 0.4; }
+.card.classified:hover { opacity: 0.8; }
+.card .buttons button.chosen { outline: 2px solid #fff; outline-offset: -2px; }
+.card .buttons button.dim { opacity: 0.3; }
+.card .title { font-size: 15px; line-height: 1.4; margin-bottom: 12px; min-height: 42px; }
+.card .source { font-size: 11px; color: #666; margin-bottom: 8px; }
+.card .buttons { display: flex; gap: 8px; }
+.card .buttons button { flex: 1; padding: 8px 4px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; transition: transform 0.1s, filter 0.1s; }
+.card .buttons button:hover { transform: scale(1.05); filter: brightness(1.15); }
+.card .buttons button:active { transform: scale(0.97); }
+.btn-great { background: #2ecc71; color: #fff; }
+.btn-good { background: #3498db; color: #fff; }
+.btn-other { background: #555; color: #ccc; }
+
+.card .prediction { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-size: 12px; }
+.card .prediction .badge { padding: 2px 8px; border-radius: 4px; font-weight: 600; text-transform: uppercase; font-size: 11px; }
+.badge-great { background: rgba(46,204,113,0.2); color: #2ecc71; }
+.badge-good { background: rgba(52,152,219,0.2); color: #3498db; }
+.badge-other { background: rgba(85,85,85,0.2); color: #888; }
+.card .confidence { color: #666; font-size: 11px; }
+.card.pred-great { border-left: 3px solid #2ecc71; }
+.card.pred-good { border-left: 3px solid #3498db; }
+.card.pred-other { border-left: 3px solid #444; }
+
+.loading { text-align: center; padding: 60px; color: #888; font-size: 16px; }
+.empty { text-align: center; padding: 60px; color: #666; }
+
+.detail-panel { background: #0f3460; border-radius: 8px; padding: 16px; margin-top: 24px; display: none; }
+.detail-panel.visible { display: block; }
+.detail-panel h3 { margin-bottom: 12px; color: #e94560; font-size: 14px; }
+#acc-chart { width: 100%; height: 200px; }
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>Title Classifier Trainer</h1>
+    <div class="metrics-bar" id="metrics-bar">
+        <div class="metric"><div class="value" id="m-nb-acc">--</div><div class="label">Accuracy</div></div>
+        <div class="metric"><div class="value" id="m-samples">0</div><div class="label">Labeled</div></div>
+        <div class="metric"><div class="value" id="m-remaining">--</div><div class="label">Remaining</div></div>
+        <div class="metric"><div class="value" id="m-model">--</div><div class="label">Model</div></div>
+    </div>
+</div>
+<div class="stats-bar" id="stats-bar">
+    <span>Great: <span class="count" id="s-great">0</span></span>
+    <span>Good: <span class="count" id="s-good">0</span></span>
+    <span>Other: <span class="count" id="s-other">0</span></span>
+    <span>Unclassified: <span class="count" id="s-unclassified">0</span></span>
+    <button id="retrain-btn" onclick="forceRetrain()">Retrain</button>
+    <button id="other-all-btn" onclick="classifyRemainingOther()">Rest = Other</button>
+</div>
+<div class="container">
+    <div id="card-grid" class="card-grid"></div>
+    <div id="loading" class="loading" style="display:none">Loading cards...</div>
+    <div id="empty" class="empty" style="display:none">No more unclassified entries. Check back after new feeds are discovered.</div>
+    <div class="detail-panel" id="detail-panel">
+        <h3>Accuracy Over Time</h3>
+        <canvas id="acc-chart"></canvas>
+    </div>
+</div>
+<script>
+const API = '/trainer/api';
+let cards = [];
+let classifiedCount = 0;
+
+async function fetchCards() {
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('empty').style.display = 'none';
+    document.getElementById('card-grid').innerHTML = '';
+    classifiedCount = 0;
+    try {
+        const resp = await fetch(`${API}/cards`);
+        cards = await resp.json();
+        renderCards();
+    } catch (e) {
+        document.getElementById('card-grid').innerHTML = '<div class="loading">Error loading cards</div>';
+    }
+    document.getElementById('loading').style.display = 'none';
+}
+
+function renderCards() {
+    const grid = document.getElementById('card-grid');
+    grid.innerHTML = '';
+    if (cards.length === 0) {
+        document.getElementById('empty').style.display = 'block';
+        return;
+    }
+    cards.forEach(card => {
+        const div = document.createElement('div');
+        div.className = 'card' + (card.predicted_label ? ` pred-${card.predicted_label}` : '');
+        div.id = `card-${card.id}`;
+        let predHtml = '';
+        if (card.predicted_label) {
+            const score = card.predicted_confidence.toFixed(1);
+            predHtml = `<div class="prediction">
+                <span class="badge badge-${card.predicted_label}">${card.predicted_label}</span>
+                <span class="confidence">${score}/2</span>
+            </div>`;
+        }
+        div.innerHTML = `
+            <div class="source">${esc(card.feed_name || '')}</div>
+            ${predHtml}
+            <div class="title">${esc(card.title)}</div>
+            <div class="buttons">
+                <button class="btn-great" data-label="great" onclick="classify(${card.id}, 'great')">Great</button>
+                <button class="btn-good" data-label="good" onclick="classify(${card.id}, 'good')">Good</button>
+                <button class="btn-other" data-label="other" onclick="classify(${card.id}, 'other')">Other</button>
+            </div>
+        `;
+        grid.appendChild(div);
+    });
+}
+
+async function classify(id, label) {
+    const card = document.getElementById(`card-${id}`);
+    const wasAlreadyClassified = card && card.classList.contains('classified');
+    if (card) {
+        card.classList.add('classified');
+        // highlight chosen button, dim others
+        card.querySelectorAll('.buttons button').forEach(btn => {
+            const btnLabel = btn.dataset.label;
+            if (btnLabel === label) {
+                btn.classList.add('chosen');
+                btn.classList.remove('dim');
+            } else {
+                btn.classList.remove('chosen');
+                btn.classList.add('dim');
+            }
+        });
+    }
+    try {
+        await fetch(`${API}/classify`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id, label})
+        });
+    } catch (e) {
+        console.error('Classify error:', e);
+    }
+    if (!wasAlreadyClassified) {
+        classifiedCount++;
+        if (classifiedCount >= cards.length) {
+            setTimeout(fetchCards, 500);
+        }
+    }
+    refreshStats();
+}
+
+function drawChart(history) {
+    const canvas = document.getElementById('acc-chart');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+    const pad = {top: 20, right: 20, bottom: 30, left: 45};
+    const cw = W - pad.left - pad.right;
+    const ch = H - pad.top - pad.bottom;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // y-axis: 0% to 100%
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#666';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.textAlign = 'right';
+    for (let pct = 0; pct <= 100; pct += 25) {
+        const y = pad.top + ch - (pct / 100) * ch;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + cw, y);
+        ctx.stroke();
+        ctx.fillText(pct + '%', pad.left - 6, y + 4);
+    }
+
+    // x-axis label
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#555';
+    ctx.fillText('votes', pad.left + cw / 2, H - 4);
+
+    if (history.length < 2) return;
+
+    // draw the line
+    ctx.beginPath();
+    ctx.strokeStyle = '#e94560';
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    for (let i = 0; i < history.length; i++) {
+        const x = pad.left + (i / (history.length - 1)) * cw;
+        const y = pad.top + ch - history[i] * ch;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // fill under the line
+    const lastX = pad.left + cw;
+    const baseline = pad.top + ch;
+    ctx.lineTo(lastX, baseline);
+    ctx.lineTo(pad.left, baseline);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(233, 69, 96, 0.1)';
+    ctx.fill();
+
+    // current value label
+    const last = history[history.length - 1];
+    ctx.fillStyle = '#e94560';
+    ctx.font = 'bold 13px -apple-system, sans-serif';
+    ctx.textAlign = 'left';
+    const ly = pad.top + ch - last * ch;
+    ctx.fillText(Math.round(last * 100) + '%', lastX + 4, ly + 4);
+}
+
+async function refreshMetrics() {
+    try {
+        const resp = await fetch(`${API}/metrics`);
+        const data = await resp.json();
+        document.getElementById('m-samples').textContent = data.training_samples || '0';
+        const r = data.rolling;
+        const history = data.history || [];
+        if (r && r.total > 0) {
+            document.getElementById('m-nb-acc').textContent = Math.round(r.accuracy * 100) + '%';
+            document.getElementById('detail-panel').classList.add('visible');
+            drawChart(history);
+        } else {
+            document.getElementById('m-nb-acc').textContent = '--';
+            document.getElementById('detail-panel').classList.remove('visible');
+        }
+        const b = data.backend;
+        if (b && b.depth) {
+            document.getElementById('m-model').textContent = `d${b.depth} / ${b.leaves}L`;
+        } else {
+            document.getElementById('m-model').textContent = '--';
+        }
+    } catch (e) {}
+}
+
+async function refreshStats() {
+    try {
+        const resp = await fetch(`${API}/stats`);
+        const data = await resp.json();
+        document.getElementById('s-great').textContent = data.great || 0;
+        document.getElementById('s-good').textContent = data.good || 0;
+        document.getElementById('s-other').textContent = data.other || 0;
+        document.getElementById('s-unclassified').textContent = data.unclassified || 0;
+        document.getElementById('m-remaining').textContent = data.unclassified || 0;
+    } catch (e) {}
+}
+
+async function classifyRemainingOther() {
+    const unclassified = cards.filter(c => {
+        const el = document.getElementById(`card-${c.id}`);
+        return el && !el.classList.contains('classified');
+    });
+    const promises = unclassified.map(c => classify(c.id, 'other'));
+    await Promise.all(promises);
+    setTimeout(fetchCards, 300);
+}
+
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+async function forceRetrain() {
+    const btn = document.getElementById('retrain-btn');
+    btn.disabled = true;
+    btn.textContent = 'Retraining...';
+    try {
+        await fetch(`${API}/retrain`, { method: 'POST' });
+        // poll metrics until model updates
+        let attempts = 0;
+        const poll = setInterval(async () => {
+            attempts++;
+            await refreshMetrics();
+            if (attempts >= 30) {
+                clearInterval(poll);
+                btn.disabled = false;
+                btn.textContent = 'Retrain';
+            }
+        }, 2000);
+        // also refresh cards after a delay
+        setTimeout(async () => {
+            clearInterval(poll);
+            await refreshMetrics();
+            await fetchCards();
+            btn.disabled = false;
+            btn.textContent = 'Retrain';
+        }, 10000);
+    } catch (e) {
+        console.error('Retrain error:', e);
+        btn.disabled = false;
+        btn.textContent = 'Retrain';
+    }
+}
+
+fetchCards();
+refreshMetrics();
+refreshStats();
+setInterval(refreshMetrics, 10000);
+setInterval(refreshStats, 10000);
+</script>
+</body>
+</html>

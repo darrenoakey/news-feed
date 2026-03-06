@@ -1,4 +1,27 @@
+import pytest
+
+from src.config import SCORING_API_URL
 from src.scoring import extract_link_from_xml, get_score_for_url, get_training_set, ScoringError
+
+
+def _scoring_api_reachable() -> bool:
+    """Check if the scoring API responds to HTTP within 5 seconds."""
+    import urllib.request
+    import urllib.error
+    try:
+        req = urllib.request.Request(f"{SCORING_API_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=5):
+            return True
+    except urllib.error.HTTPError:
+        return True  # server responded (e.g. 404) — it's alive
+    except Exception:
+        return False
+
+
+requires_scoring_api = pytest.mark.skipif(
+    not _scoring_api_reachable(),
+    reason=f"Scoring API at {SCORING_API_URL} is not reachable",
+)
 
 
 # ##################################################################
@@ -31,6 +54,7 @@ def test_extract_link_from_xml_invalid():
 # ##################################################################
 # test get score for url real
 # verify we can call the real scoring API
+@requires_scoring_api
 def test_get_score_for_url_real():
     result = get_score_for_url("https://openai.com/index/introducing-gpt-4o/", timeout=120)
     assert "rank" in result
@@ -50,6 +74,7 @@ def test_scoring_error():
 # ##################################################################
 # test get training set real
 # verify we can call the real training set API
+@requires_scoring_api
 def test_get_training_set_real():
     result = get_training_set(timeout=30)
     assert isinstance(result, list)

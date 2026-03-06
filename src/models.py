@@ -48,6 +48,7 @@ class FeedEntry(Base):
     pending = relationship("PendingEntry", back_populates="entry", cascade="all, delete-orphan")
     scored = relationship("ScoredEntry", back_populates="entry", cascade="all, delete-orphan")
     error = relationship("ErrorEntry", back_populates="entry", cascade="all, delete-orphan")
+    title_classification = relationship("TitleClassification", back_populates="entry", cascade="all, delete-orphan", uselist=False)
 
     __table_args__ = (UniqueConstraint("feed_id", "guid", name="uq_feed_guid"),)
 
@@ -90,3 +91,21 @@ class ErrorEntry(Base):
     created_at = Column(DateTime, nullable=False, default=utc_now)
 
     entry = relationship("FeedEntry", back_populates="error")
+
+
+# ##################################################################
+# title classification model
+# stores human labels and predictions for title-based classification
+class TitleClassification(Base):
+    __tablename__ = "title_classifications"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entry_id = Column(Integer, ForeignKey("feed_entries.id"), unique=True, nullable=False)
+    title = Column(Text, nullable=False)
+    human_label = Column(Text, nullable=True)
+    predicted_label = Column(Text, nullable=True)
+    predicted_score = Column(Float, nullable=True)
+    classified_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utc_now)
+
+    entry = relationship("FeedEntry", back_populates="title_classification")

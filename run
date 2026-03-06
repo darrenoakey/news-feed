@@ -42,7 +42,7 @@ def command_test(args: argparse.Namespace) -> int:
 # command lint
 # run ruff linter
 def command_lint(args: argparse.Namespace) -> int:
-    return run_command(["ruff", "check", "--line-length", "120"])
+    return run_command(["ruff", "check"])
 
 
 # ##################################################################
@@ -149,8 +149,27 @@ def command_export_rss(args: argparse.Namespace) -> int:
 
 
 # ##################################################################
+# command export rss by label
+# export RSS XML for entries classified with a given label
+def command_export_rss_by_label(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.cli import export_rss_by_label
+    return export_rss_by_label(args.label, args.limit, args.title, args.description, args.link)
+
+
+# ##################################################################
 # command update trained
 # update scores for entries in the training set
+# ##################################################################
+# command train classifier
+# run the LLM-based classifier training loop
+def command_train_classifier(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.classifier_trainer import main as trainer_main
+    trainer_main()
+    return 0
+
+
 def command_update_trained(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(PROJECT_ROOT))
     from src.cli import update_trained
@@ -215,9 +234,29 @@ def main(argv: list[str]) -> int:
     p_export.add_argument("--link", default="https://darren.insidemind.com.au/news.html", help="RSS channel link")
     p_export.set_defaults(func=command_export_rss)
 
+    # export-rss-great command
+    p_export_great = sub.add_parser("export-rss-great", help="Export RSS XML for articles classified as great")
+    p_export_great.add_argument("--limit", type=int, default=100, help="Maximum entries to include (default: 100)")
+    p_export_great.add_argument("--title", default="Great Tech News", help="RSS channel title")
+    p_export_great.add_argument("--description", default="Top-rated articles classified as great by ML classifier", help="RSS channel description")
+    p_export_great.add_argument("--link", default="https://darren.insidemind.com.au/news.html", help="RSS channel link")
+    p_export_great.set_defaults(func=command_export_rss_by_label, label="great")
+
+    # export-rss-good command
+    p_export_good = sub.add_parser("export-rss-good", help="Export RSS XML for articles classified as good")
+    p_export_good.add_argument("--limit", type=int, default=100, help="Maximum entries to include (default: 100)")
+    p_export_good.add_argument("--title", default="Good Tech News", help="RSS channel title")
+    p_export_good.add_argument("--description", default="Interesting articles classified as good by ML classifier", help="RSS channel description")
+    p_export_good.add_argument("--link", default="https://darren.insidemind.com.au/news.html", help="RSS channel link")
+    p_export_good.set_defaults(func=command_export_rss_by_label, label="good")
+
     # update-trained command
     p_update_trained = sub.add_parser("update-trained", help="Update scores for entries in the training set")
     p_update_trained.set_defaults(func=command_update_trained)
+
+    # train-classifier command
+    p_train = sub.add_parser("train-classifier", help="Train sklearn title classifier")
+    p_train.set_defaults(func=command_train_classifier)
 
     args = parser.parse_args(argv)
     return args.func(args)

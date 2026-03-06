@@ -16,9 +16,12 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from fastapi.responses import HTMLResponse
+
 from src.config import (
     SERVER_HOST,
     SERVER_PORT,
+    PROJECT_ROOT,
     MIN_FREQUENCY_SECONDS,
     MAX_FREQUENCY_SECONDS,
     DEFAULT_FREQUENCY_SECONDS,
@@ -31,10 +34,11 @@ from src.config import (
     DISCORD_RATE_LIMIT_BACKOFF_SECONDS,
 )
 from src.database import get_session, init_db
-from src.models import Feed, FeedEntry, PendingEntry, ScoredEntry, ErrorEntry
+from src.models import Feed, FeedEntry, PendingEntry, ScoredEntry, ErrorEntry, TitleClassification
 from src.rss import fetch_rss_entries
 from src.scoring import extract_link_from_xml, get_score_for_url, ScoringError
 from src.discord_sender import extract_title_from_xml, extract_summary_from_xml, send_news_item
+from src.title_classifier import TitleClassifierService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -276,33 +280,181 @@ async def process_next_scored():
 
 
 # ##################################################################
+# title classifier instance
+# shared classifier service for training and prediction
+title_classifier = TitleClassifierService()
+
+TENTATIVE_WORKER_SLEEP_SECONDS = 5
+TENTATIVE_BATCH_SIZE = 50
+RULES_RETRAIN_THRESHOLD = 20
+
+_last_rules_train_count: int = 0
+_rules_training_lock: bool = False
+
+
+# ##################################################################
+# tentative worker
+# pre-classify entries using rules backend to maintain a pool for balanced card presentation
+async def tentative_worker():
+    logger.info("Tentative worker started")
+    while True:
+        try:
+            await asyncio.to_thread(_tentative_cycle)
+        except Exception as err:
+            logger.exception("Tentative worker error: %s", err)
+        await asyncio.sleep(TENTATIVE_WORKER_SLEEP_SECONDS)
+
+
+def _tentative_cycle():
+    with get_session() as session:
+        # find scored entries with no TitleClassification row yet
+        already_classified = session.query(TitleClassification.entry_id)
+        unclassified = (
+            session.query(FeedEntry)
+            .filter(
+                FeedEntry.score.isnot(None),
+                FeedEntry.id.notin_(already_classified),
+            )
+            .limit(TENTATIVE_BATCH_SIZE)
+            .all()
+        )
+
+        if not unclassified:
+            return
+
+        created = 0
+        for entry in unclassified:
+            title = extract_title_from_xml(entry.xml_content) or entry.guid
+            prediction = title_classifier.predict(title)
+            if prediction:
+                tc = TitleClassification(
+                    entry_id=entry.id,
+                    title=title,
+                    predicted_label=prediction[0],
+                    predicted_score=prediction[1],
+                )
+                session.add(tc)
+                created += 1
+
+        if created:
+            logger.info("Tentative worker created %d classifications", created)
+
+
+# ##################################################################
+# maybe retrain rules
+# trigger LLM rules refinement when enough new great/good labels accumulate
+def _maybe_retrain_rules():
+    global _last_rules_train_count, _rules_training_lock
+    if _rules_training_lock:
+        return
+
+    with get_session() as session:
+        from sqlalchemy import func
+        count = (
+            session.query(func.count(TitleClassification.id))
+            .filter(TitleClassification.human_label.in_(("great", "good")))
+            .scalar()
+        )
+
+    if count - _last_rules_train_count < RULES_RETRAIN_THRESHOLD:
+        return
+
+    _rules_training_lock = True
+    try:
+        logger.info("Rules retraining triggered: %d new great/good labels since last train", count - _last_rules_train_count)
+        from src.classifier_trainer import train_tree
+        train_tree()
+        title_classifier.load_model()
+        _last_rules_train_count = count
+        logger.info("Rules retraining complete, new count baseline: %d", count)
+        _refresh_tentative_predictions()
+    except Exception as err:
+        logger.exception("Rules retraining failed: %s", err)
+    finally:
+        _rules_training_lock = False
+
+
+# ##################################################################
+# refresh tentative predictions
+# re-classify all unlabeled tentative entries with the updated rules backend
+def _refresh_tentative_predictions():
+    with get_session() as session:
+        tentative = (
+            session.query(TitleClassification)
+            .filter(
+                TitleClassification.human_label.is_(None),
+                TitleClassification.predicted_label.isnot(None),
+            )
+            .all()
+        )
+        updated = 0
+        for tc in tentative:
+            prediction = title_classifier.predict(tc.title)
+            if prediction:
+                new_label, new_score = prediction
+                if new_label != tc.predicted_label:
+                    tc.predicted_label = new_label
+                    tc.predicted_score = new_score
+                    updated += 1
+        logger.info("Refreshed tentative predictions: %d/%d updated", updated, len(tentative))
+
+
+# ##################################################################
+# seed rolling history
+# backfill rolling accuracy from existing labeled data that had predictions
+def _seed_rolling_history():
+    global _last_rules_train_count
+
+    # load the sklearn decision tree model
+    title_classifier.load_model()
+    if not title_classifier.is_trained:
+        logger.info("No tree classifier available — tentative classification disabled until training runs")
+        return
+    with get_session() as session:
+        from sqlalchemy import func
+        labeled = (
+            session.query(TitleClassification)
+            .filter(TitleClassification.human_label.isnot(None))
+            .order_by(TitleClassification.classified_at.asc())
+            .all()
+        )
+        title_classifier.set_training_count(len(labeled))
+        for tc in labeled:
+            prediction = title_classifier.predict(tc.title)
+            if prediction:
+                title_classifier.record_result(prediction[0], tc.human_label)
+
+        # initialize rules retrain baseline
+        _last_rules_train_count = (
+            session.query(func.count(TitleClassification.id))
+            .filter(TitleClassification.human_label.in_(("great", "good")))
+            .scalar()
+        )
+
+    logger.info("Seeded rolling history with %d entries, rules train baseline: %d", len(labeled), _last_rules_train_count)
+
+
+# ##################################################################
 # lifespan
 # startup and shutdown logic for the FastAPI app
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    _seed_rolling_history()
     logger.info("Database initialized")
 
     feed_task = asyncio.create_task(background_worker())
     scoring_task = asyncio.create_task(scoring_worker())
     discord_task = asyncio.create_task(discord_worker())
+    tentative_task = asyncio.create_task(tentative_worker())
     yield
 
-    feed_task.cancel()
-    scoring_task.cancel()
-    discord_task.cancel()
-    try:
-        await feed_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await scoring_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await discord_task
-    except asyncio.CancelledError:
-        pass
+    for task in [feed_task, scoring_task, discord_task, tentative_task]:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="News Feed", lifespan=lifespan)
@@ -438,6 +590,175 @@ def get_stats():
                 {"name": name, "avg_score": round(avg_score, 2)} for name, avg_score in top_feeds_by_avg_score
             ],
         }
+
+
+# ##################################################################
+# trainer page
+# serve the training UI HTML
+@app.get("/trainer", response_class=HTMLResponse)
+def trainer_page():
+    html_path = PROJECT_ROOT / "static" / "trainer.html"
+    return HTMLResponse(content=html_path.read_text())
+
+
+# ##################################################################
+# classify request model
+class ClassifyRequest(BaseModel):
+    id: int
+    label: str
+
+
+# ##################################################################
+# trainer api cards
+# return 21 random unclassified feed entries for labeling (21 = divisible by 3 columns)
+@app.get("/trainer/api/cards")
+def trainer_cards():
+    with get_session() as session:
+        from sqlalchemy import func
+        from sqlalchemy.orm import joinedload
+
+        import random
+
+        # draw from pre-classified tentative pool: 7 from each predicted_label
+        tentative_base = (
+            session.query(TitleClassification)
+            .join(FeedEntry, TitleClassification.entry_id == FeedEntry.id)
+            .options(joinedload(TitleClassification.entry).joinedload(FeedEntry.feed))
+            .filter(
+                TitleClassification.human_label.is_(None),
+                TitleClassification.predicted_label.isnot(None),
+            )
+        )
+
+        bands = [
+            tentative_base.filter(TitleClassification.predicted_label == "great"),
+            tentative_base.filter(TitleClassification.predicted_label == "good"),
+            tentative_base.filter(TitleClassification.predicted_label == "other"),
+        ]
+
+        tcs = []
+        for band_query in bands:
+            band_tcs = band_query.order_by(func.random()).limit(7).all()
+            tcs.extend(band_tcs)
+        random.shuffle(tcs)
+
+        # re-score with latest model so cards reflect current predictions
+        for tc in tcs:
+            prediction = title_classifier.predict(tc.title)
+            if prediction:
+                new_label, new_score = prediction
+                if new_label != tc.predicted_label or new_score != tc.predicted_score:
+                    tc.predicted_label = new_label
+                    tc.predicted_score = new_score
+
+        results = []
+        for tc in tcs:
+            entry = tc.entry
+            card = {
+                "id": tc.id,
+                "entry_id": entry.id,
+                "title": tc.title,
+                "feed_name": entry.feed.name if entry.feed else "Unknown",
+                "predicted_label": tc.predicted_label,
+                "predicted_confidence": round(tc.predicted_score, 2) if tc.predicted_score is not None else None,
+            }
+            results.append(card)
+        return results
+
+
+# ##################################################################
+# trainer api classify
+# save a human label for a title classification entry
+@app.post("/trainer/api/classify")
+def trainer_classify(req: ClassifyRequest):
+    if req.label not in ("great", "good", "other"):
+        raise HTTPException(status_code=400, detail="Invalid label")
+    with get_session() as session:
+        tc = session.query(TitleClassification).filter(TitleClassification.id == req.id).first()
+        if tc is None:
+            raise HTTPException(status_code=404, detail="Classification entry not found")
+        # record prediction vs actual for rolling accuracy
+        prediction = title_classifier.predict(tc.title)
+        if prediction:
+            title_classifier.record_result(prediction[0], req.label)
+        tc.human_label = req.label
+        tc.classified_at = datetime.now(timezone.utc)
+    if req.label in ("great", "good"):
+        import threading
+        threading.Thread(target=_maybe_retrain_rules, daemon=True).start()
+    return {"status": "ok"}
+
+
+# ##################################################################
+# trainer api metrics
+# return current model training metrics
+@app.get("/trainer/api/metrics")
+def trainer_metrics():
+    metrics = title_classifier.get_metrics()
+    if metrics is None:
+        with get_session() as session:
+            count = session.query(TitleClassification).filter(TitleClassification.human_label.isnot(None)).count()
+        return {"training_samples": count, "status": "not_trained"}
+    return metrics
+
+
+# ##################################################################
+# trainer api retrain
+# force a retrain of the sklearn classifier
+@app.post("/trainer/api/retrain")
+def trainer_retrain():
+    import threading
+
+    def _do_retrain():
+        global _last_rules_train_count, _rules_training_lock
+        if _rules_training_lock:
+            return
+        _rules_training_lock = True
+        try:
+            from src.classifier_trainer import train_tree
+            train_tree()
+            title_classifier.load_model()
+            with get_session() as session:
+                from sqlalchemy import func
+                _last_rules_train_count = (
+                    session.query(func.count(TitleClassification.id))
+                    .filter(TitleClassification.human_label.in_(("great", "good")))
+                    .scalar()
+                )
+            _refresh_tentative_predictions()
+        except Exception as err:
+            logger.exception("Manual retrain failed: %s", err)
+        finally:
+            _rules_training_lock = False
+
+    threading.Thread(target=_do_retrain, daemon=True).start()
+    return {"status": "ok", "message": "Retrain started in background"}
+
+
+# ##################################################################
+# trainer api stats
+# return classification label counts
+@app.get("/trainer/api/stats")
+def trainer_stats():
+    with get_session() as session:
+        from sqlalchemy import func
+
+        counts = (
+            session.query(TitleClassification.human_label, func.count(TitleClassification.id))
+            .group_by(TitleClassification.human_label)
+            .all()
+        )
+        result = {"great": 0, "good": 0, "other": 0, "unclassified": 0}
+        for label, count in counts:
+            if label is None:
+                result["unclassified"] = count
+            elif label in result:
+                result[label] = count
+        # also count entries without any TitleClassification row
+        total_entries = session.query(FeedEntry).count()
+        total_classified_rows = session.query(TitleClassification).count()
+        result["unclassified"] += total_entries - total_classified_rows
+        return result
 
 
 # ##################################################################
