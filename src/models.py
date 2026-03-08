@@ -45,52 +45,9 @@ class FeedEntry(Base):
     scored_at = Column(DateTime, nullable=True)
 
     feed = relationship("Feed", back_populates="entries")
-    pending = relationship("PendingEntry", back_populates="entry", cascade="all, delete-orphan")
-    scored = relationship("ScoredEntry", back_populates="entry", cascade="all, delete-orphan")
-    error = relationship("ErrorEntry", back_populates="entry", cascade="all, delete-orphan")
     title_classification = relationship("TitleClassification", back_populates="entry", cascade="all, delete-orphan", uselist=False)
 
     __table_args__ = (UniqueConstraint("feed_id", "guid", name="uq_feed_guid"),)
-
-
-# ##################################################################
-# pending entry model
-# queue of new entries waiting to be processed
-class PendingEntry(Base):
-    __tablename__ = "pending_entries"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    entry_id = Column(Integer, ForeignKey("feed_entries.id"), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=utc_now)
-
-    entry = relationship("FeedEntry", back_populates="pending")
-
-
-# ##################################################################
-# scored entry model
-# queue of successfully scored entries waiting for further processing
-class ScoredEntry(Base):
-    __tablename__ = "scored_entries"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    entry_id = Column(Integer, ForeignKey("feed_entries.id"), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=utc_now)
-
-    entry = relationship("FeedEntry", back_populates="scored")
-
-
-# ##################################################################
-# error entry model
-# queue of entries that failed scoring
-class ErrorEntry(Base):
-    __tablename__ = "error_entries"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    entry_id = Column(Integer, ForeignKey("feed_entries.id"), nullable=False)
-    error_message = Column(Text, nullable=False)
-    created_at = Column(DateTime, nullable=False, default=utc_now)
-
-    entry = relationship("FeedEntry", back_populates="error")
 
 
 # ##################################################################

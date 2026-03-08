@@ -146,21 +146,15 @@ def stats() -> int:
     print(f"Total entries:            {data['total_entries']}")
     print(f"Entries today:            {data['entries_today']}")
     print()
-    print("Scoring Pipeline:")
-    print(f"  Pending (to score):     {data['total_pending']}")
-    print(f"  Scored (in queue):      {data['total_scored']}")
-    print(f"  Errors:                 {data['total_errors']}")
-    print(f"  Scored today:           {data['scored_today']}")
-    print()
     print(f"Average entries per feed: {data['average_entries_per_feed']}")
+    print()
+    print("Classification:")
+    print(f"  Total classified:       {data.get('total_classified', 0)}")
+    print(f"  Human labeled:          {data.get('total_labeled', 0)}")
     print()
     print("Top 3 Most Active Feeds:")
     for i, feed in enumerate(data["top_feeds"], 1):
         print(f"  {i}. {feed['name']}: {feed['count']} entries")
-    print()
-    print("Top 10 Feeds by Average Score:")
-    for i, feed in enumerate(data.get("top_feeds_by_avg_score", []), 1):
-        print(f"  {i:2}. {feed['name']}: {feed['avg_score']:.2f}")
 
     return 0
 
@@ -244,9 +238,6 @@ def _build_rss_xml(
 
         entry, entry_root = group_entries[0]
 
-        scores = [e.score for e, _ in group_entries if e.score is not None]
-        avg_score = sum(scores) / len(scores) if scores else None
-
         item = ET.SubElement(channel, "item")
         item_count += 1
 
@@ -275,48 +266,8 @@ def _build_rss_xml(
         ET.SubElement(item, "guid", isPermaLink="false").text = entry.guid
         ET.SubElement(item, "source", url=entry.feed.url).text = entry.feed.name
 
-        if avg_score is not None:
-            score_rounded = round(avg_score, 1)
-            ET.SubElement(item, "score").text = str(score_rounded)
-
     xml_str = ET.tostring(rss, encoding="unicode", xml_declaration=True)
     print(xml_str)
-
-
-# ##################################################################
-# export rss
-# generate RSS 2.0 XML for entries above a score threshold
-# deduplicates by both URL and title (same story from different sources)
-def export_rss(
-    min_score: float, limit: int, title: str, description: str, link: str, max_score: Optional[float] = None
-) -> int:
-    from src.database import get_session
-    from src.models import FeedEntry, Feed
-    from src.scoring import get_training_set, ScoringError
-
-    # Sync training scores before export to reflect any corrections
-    try:
-        training_items = get_training_set()
-        if training_items:
-            apply_training_scores(training_items)
-    except ScoringError:
-        pass  # Continue with export even if sync fails
-
-    with get_session() as session:
-        query = (
-            session.query(FeedEntry)
-            .join(Feed)
-            .filter(FeedEntry.score.isnot(None))
-            .filter(FeedEntry.score >= min_score)
-        )
-        if max_score is not None:
-            query = query.filter(FeedEntry.score < max_score)
-        entries = query.order_by(FeedEntry.discovered_at.desc()).limit(limit * 5).all()
-
-        entry_groups = _deduplicate_entries(entries)
-        _build_rss_xml(entry_groups, limit, title, description, link)
-
-    return 0
 
 
 # ##################################################################
@@ -343,69 +294,4 @@ def export_rss_by_label(
         entry_groups = _deduplicate_entries(entries)
         _build_rss_xml(entry_groups, limit, title, description, link)
 
-    return 0
-
-
-# ##################################################################
-# apply training scores
-# update database entries with scores from training data
-# returns number of entries updated
-def apply_training_scores(training_items: list[dict]) -> int:
-    import xml.etree.ElementTree as ET
-    from datetime import datetime, timezone
-
-    from src.database import get_session
-    from src.models import FeedEntry
-
-    if not training_items:
-        return 0
-
-    # Build URL -> score mapping
-    url_to_score = {item["url"]: item["score"] for item in training_items}
-
-    updated_count = 0
-    with get_session() as session:
-        entries = session.query(FeedEntry).all()
-
-        for entry in entries:
-            try:
-                root = ET.fromstring(entry.xml_content)
-                link_elem = root.find("link")
-                if link_elem is None or not link_elem.text:
-                    continue
-                link = link_elem.text.strip()
-            except ET.ParseError:
-                continue
-
-            if link in url_to_score:
-                new_score = url_to_score[link]
-                if entry.score != new_score:
-                    entry.score = new_score
-                    entry.scored_at = datetime.now(timezone.utc)
-                    updated_count += 1
-
-        session.commit()
-
-    return updated_count
-
-
-# ##################################################################
-# update trained
-# update scores for entries that are in the training set
-def update_trained() -> int:
-    from src.scoring import get_training_set, ScoringError
-
-    try:
-        training_items = get_training_set()
-    except ScoringError as err:
-        print(f"Error: Failed to fetch training set: {err}", file=sys.stderr)
-        return 1
-
-    if not training_items:
-        print("No training data found")
-        return 0
-
-    print(f"Fetched {len(training_items)} trained URLs from scoring API")
-    updated_count = apply_training_scores(training_items)
-    print(f"Updated {updated_count} entries with training scores")
     return 0

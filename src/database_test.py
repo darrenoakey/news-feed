@@ -23,14 +23,12 @@ def test_init_db_creates_tables():
             init_db()
             session_factory = sessionmaker(bind=engine)
             session = session_factory()
-            from src.models import Feed, FeedEntry, PendingEntry
+            from src.models import Feed, FeedEntry
 
             feeds = session.query(Feed).all()
             assert feeds == []
             entries = session.query(FeedEntry).all()
             assert entries == []
-            pending = session.query(PendingEntry).all()
-            assert pending == []
             session.close()
         finally:
             db_module._engine = original_engine

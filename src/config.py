@@ -28,17 +28,3 @@ DATABASE_PATH = PROJECT_ROOT / "local" / "feeds.db"
 # host and port for the FastAPI server
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 19100
-
-# ##################################################################
-# scoring api settings
-# host and port for the news-score API
-SCORING_API_URL = "http://10.0.0.46:19091"
-SCORING_WORKER_SLEEP_SECONDS = 60
-SCORING_API_TIMEOUT_SECONDS = 120
-
-# ##################################################################
-# discord publishing settings
-# threshold and timing for publishing to discord
-DISCORD_MIN_SCORE = 8.0
-DISCORD_WORKER_SLEEP_SECONDS = 60
-DISCORD_RATE_LIMIT_BACKOFF_SECONDS = 300

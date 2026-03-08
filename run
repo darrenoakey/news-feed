@@ -96,59 +96,6 @@ def command_monitor(args: argparse.Namespace) -> int:
 
 
 # ##################################################################
-# command test discord send
-# send the highest rated news item to discord for testing formatting
-def command_test_discord_send(args: argparse.Namespace) -> int:
-    sys.path.insert(0, str(PROJECT_ROOT))
-    from src.database import get_session
-    from src.models import FeedEntry, Feed
-    from src.scoring import extract_link_from_xml
-    from src.discord_sender import extract_title_from_xml, extract_summary_from_xml, send_news_item
-
-    with get_session() as session:
-        entry = (
-            session.query(FeedEntry)
-            .filter(FeedEntry.score.isnot(None))
-            .order_by(FeedEntry.score.desc())
-            .first()
-        )
-
-        if entry is None:
-            print("No scored entries found")
-            return 1
-
-        feed = session.query(Feed).filter(Feed.id == entry.feed_id).first()
-        feed_name = feed.name if feed else "Unknown"
-
-        title = extract_title_from_xml(entry.xml_content) or entry.guid
-        link = extract_link_from_xml(entry.xml_content) or entry.guid
-        summary = extract_summary_from_xml(entry.xml_content)
-        score = entry.score
-
-        print(f"Sending to Discord:")
-        print(f"  Title: {title}")
-        print(f"  Score: {score:.1f}")
-        print(f"  Feed: {feed_name}")
-        print(f"  Link: {link}")
-
-        if send_news_item(title, link, score, feed_name, summary):
-            print("Sent successfully!")
-            return 0
-        else:
-            print("Failed to send")
-            return 1
-
-
-# ##################################################################
-# command export rss
-# export RSS XML for entries within a score range
-def command_export_rss(args: argparse.Namespace) -> int:
-    sys.path.insert(0, str(PROJECT_ROOT))
-    from src.cli import export_rss
-    return export_rss(args.min_score, args.limit, args.title, args.description, args.link, args.max_score)
-
-
-# ##################################################################
 # command export rss by label
 # export RSS XML for entries classified with a given label
 def command_export_rss_by_label(args: argparse.Namespace) -> int:
@@ -158,22 +105,13 @@ def command_export_rss_by_label(args: argparse.Namespace) -> int:
 
 
 # ##################################################################
-# command update trained
-# update scores for entries in the training set
-# ##################################################################
 # command train classifier
-# run the LLM-based classifier training loop
+# run the sklearn-based classifier training loop
 def command_train_classifier(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(PROJECT_ROOT))
     from src.classifier_trainer import main as trainer_main
     trainer_main()
     return 0
-
-
-def command_update_trained(args: argparse.Namespace) -> int:
-    sys.path.insert(0, str(PROJECT_ROOT))
-    from src.cli import update_trained
-    return update_trained()
 
 
 # ##################################################################
@@ -220,20 +158,6 @@ def main(argv: list[str]) -> int:
     p_monitor = sub.add_parser("monitor", help="Tail the server logs")
     p_monitor.set_defaults(func=command_monitor)
 
-    # test-discord-send command
-    p_discord = sub.add_parser("test-discord-send", help="Send highest rated article to Discord")
-    p_discord.set_defaults(func=command_test_discord_send)
-
-    # export-rss command
-    p_export = sub.add_parser("export-rss", help="Export RSS XML for entries within a score range")
-    p_export.add_argument("--min-score", type=float, default=8.0, help="Minimum score threshold (default: 8.0)")
-    p_export.add_argument("--max-score", type=float, default=None, help="Maximum score threshold (exclusive, default: none)")
-    p_export.add_argument("--limit", type=int, default=100, help="Maximum entries to include (default: 100)")
-    p_export.add_argument("--title", default="Curated Tech News", help="RSS channel title")
-    p_export.add_argument("--description", default="AI-curated tech news. These are links from around the web - none of this is my own work.", help="RSS channel description")
-    p_export.add_argument("--link", default="https://darren.insidemind.com.au/news.html", help="RSS channel link")
-    p_export.set_defaults(func=command_export_rss)
-
     # export-rss-great command
     p_export_great = sub.add_parser("export-rss-great", help="Export RSS XML for articles classified as great")
     p_export_great.add_argument("--limit", type=int, default=100, help="Maximum entries to include (default: 100)")
@@ -249,10 +173,6 @@ def main(argv: list[str]) -> int:
     p_export_good.add_argument("--description", default="Interesting articles classified as good by ML classifier", help="RSS channel description")
     p_export_good.add_argument("--link", default="https://darren.insidemind.com.au/news.html", help="RSS channel link")
     p_export_good.set_defaults(func=command_export_rss_by_label, label="good")
-
-    # update-trained command
-    p_update_trained = sub.add_parser("update-trained", help="Update scores for entries in the training set")
-    p_update_trained.set_defaults(func=command_update_trained)
 
     # train-classifier command
     p_train = sub.add_parser("train-classifier", help="Train sklearn title classifier")
