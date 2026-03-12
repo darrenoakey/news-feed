@@ -10,9 +10,9 @@ RSS aggregator with ML-based title classification.
 
 - `src/cli.py` - CLI commands including `export-rss-great`, `export-rss-good`
 - `src/server.py` - Background workers: feed discovery, tentative classification
-- `src/title_classifier.py` - TitleClassifierService wrapping sklearn decision tree
-- `src/classifier_backend.py` - Decision tree model loading/prediction
-- `src/classifier_trainer.py` - Training loop for the title classifier
+- `src/title_classifier.py` - TitleClassifierService wrapping both tree and SVM backends
+- `src/classifier_backend.py` - TreeBackend (decision tree) and SVMBackend (TF-IDF + LinearSVC)
+- `src/classifier_trainer.py` - Training loops: `train_tree()` and `train_svm()`
 - `static/trainer.html` - Web UI for human labeling at `/trainer`
 - `local/feeds.db` - SQLite database with feed entries and classifications
 
@@ -22,18 +22,23 @@ RSS aggregator with ML-based title classification.
 2. Tentative worker classifies all entries via `TitleClassifierService` → creates `TitleClassification` rows
 3. `/trainer` web UI presents balanced cards (7 per label) for human labeling
 4. Retraining triggers automatically after 20 new great/good labels
-5. Model stored at `local/title_classifier.joblib`
+5. Models stored at `local/classifier_model.joblib` (tree) and `local/svm_model.joblib` (SVM)
 
-## Title Classifier
+## Title Classifiers
 
-- sklearn decision tree trained on human-labeled titles (great/good/other)
-- Tentative worker runs every 5s, classifies 50 unclassified entries per cycle
-- `trainer_cards()` re-scores cards with latest model before returning
+Two side-by-side classifiers, same human labels feed both:
+
+- **Tree**: sklearn DecisionTreeClassifier with CountVectorizer (bigrams, binary). Model at `local/classifier_model.joblib`
+- **SVM** (primary): TF-IDF + LinearSVC. Model at `local/svm_model.joblib`. Used for RSS feeds and portfolio
+
+Trainer UI (`/trainer`) has Tree/SVM toggle to switch which model's predictions are displayed and retrained. Tentative worker classifies with both models. Rolling accuracy tracked per model.
+
+DB columns: `predicted_label`/`predicted_score` (tree), `svm_predicted_label`/`svm_predicted_score` (SVM)
 
 ## Label-Based RSS Feeds
 
-- `./run export-rss-great` — articles where `predicted_label == "great"`
-- `./run export-rss-good` — articles where `predicted_label == "good"`
+- `./run export-rss-great` — articles where `svm_predicted_label == "great"`
+- `./run export-rss-good` — articles where `svm_predicted_label == "good"`
 - Dedup/generation uses shared helpers `_deduplicate_entries` and `_build_rss_xml` in cli.py
 
 ## Database Location
