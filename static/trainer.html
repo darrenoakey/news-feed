@@ -23,6 +23,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 #other-all-btn { padding: 6px 16px; background: #555; color: #ccc; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
 #other-all-btn:hover { background: #666; color: #fff; }
 
+.model-toggle { display: flex; gap: 0; border-radius: 6px; overflow: hidden; border: 1px solid #0f3460; }
+.model-toggle button { padding: 6px 16px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; background: #1a1a2e; color: #888; transition: background 0.2s, color 0.2s; }
+.model-toggle button.active { background: #e94560; color: #fff; }
+.model-toggle button:hover:not(.active) { background: #233; color: #ccc; }
+
 .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
 
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
@@ -64,6 +69,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 <body>
 <div class="header">
     <h1>Title Classifier Trainer</h1>
+    <div class="model-toggle" id="model-toggle">
+        <button class="active" data-model="tree" onclick="switchModel('tree')">Tree</button>
+        <button data-model="svm" onclick="switchModel('svm')">SVM</button>
+    </div>
     <div class="metrics-bar" id="metrics-bar">
         <div class="metric"><div class="value" id="m-nb-acc">--</div><div class="label">Accuracy</div></div>
         <div class="metric"><div class="value" id="m-samples">0</div><div class="label">Labeled</div></div>
@@ -92,6 +101,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 const API = '/trainer/api';
 let cards = [];
 let classifiedCount = 0;
+let currentModel = 'tree';
+
+function switchModel(model) {
+    currentModel = model;
+    document.querySelectorAll('#model-toggle button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.model === model);
+    });
+    fetchCards();
+    refreshMetrics();
+}
 
 async function fetchCards() {
     document.getElementById('loading').style.display = 'block';
@@ -99,7 +118,7 @@ async function fetchCards() {
     document.getElementById('card-grid').innerHTML = '';
     classifiedCount = 0;
     try {
-        const resp = await fetch(`${API}/cards`);
+        const resp = await fetch(`${API}/cards?model=${currentModel}`);
         cards = await resp.json();
         renderCards();
     } catch (e) {
@@ -246,7 +265,7 @@ function drawChart(history) {
 
 async function refreshMetrics() {
     try {
-        const resp = await fetch(`${API}/metrics`);
+        const resp = await fetch(`${API}/metrics?model=${currentModel}`);
         const data = await resp.json();
         document.getElementById('m-samples').textContent = data.training_samples || '0';
         const r = data.rolling;
@@ -262,6 +281,8 @@ async function refreshMetrics() {
         const b = data.backend;
         if (b && b.depth) {
             document.getElementById('m-model').textContent = `d${b.depth} / ${b.leaves}L`;
+        } else if (b && b.features) {
+            document.getElementById('m-model').textContent = `${b.features}F`;
         } else {
             document.getElementById('m-model').textContent = '--';
         }
@@ -301,7 +322,7 @@ async function forceRetrain() {
     btn.disabled = true;
     btn.textContent = 'Retraining...';
     try {
-        await fetch(`${API}/retrain`, { method: 'POST' });
+        await fetch(`${API}/retrain?model=${currentModel}`, { method: 'POST' });
         // poll metrics until model updates
         let attempts = 0;
         const poll = setInterval(async () => {

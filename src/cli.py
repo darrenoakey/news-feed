@@ -285,7 +285,7 @@ def export_rss_by_label(
             session.query(FeedEntry)
             .join(Feed)
             .join(TitleClassification, TitleClassification.entry_id == FeedEntry.id)
-            .filter(TitleClassification.predicted_label == label)
+            .filter(TitleClassification.svm_predicted_label == label)
             .order_by(FeedEntry.discovered_at.desc())
             .limit(limit * 5)
             .all()

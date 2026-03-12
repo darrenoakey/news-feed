@@ -170,12 +170,15 @@ def _tentative_cycle():
         for entry in unclassified:
             title = extract_title_from_xml(entry.xml_content) or entry.guid
             prediction = title_classifier.predict(title)
-            if prediction:
+            svm_prediction = title_classifier.predict_svm(title)
+            if prediction or svm_prediction:
                 tc = TitleClassification(
                     entry_id=entry.id,
                     title=title,
-                    predicted_label=prediction[0],
-                    predicted_score=prediction[1],
+                    predicted_label=prediction[0] if prediction else None,
+                    predicted_score=prediction[1] if prediction else None,
+                    svm_predicted_label=svm_prediction[0] if svm_prediction else None,
+                    svm_predicted_score=svm_prediction[1] if svm_prediction else None,
                 )
                 session.add(tc)
                 created += 1
@@ -206,9 +209,11 @@ def _maybe_retrain_rules():
     _rules_training_lock = True
     try:
         logger.info("Rules retraining triggered: %d new great/good labels since last train", count - _last_rules_train_count)
-        from src.classifier_trainer import train_tree
+        from src.classifier_trainer import train_tree, train_svm
         train_tree()
+        train_svm()
         title_classifier.load_model()
+        title_classifier.load_svm_model()
         _last_rules_train_count = count
         logger.info("Rules retraining complete, new count baseline: %d", count)
         _refresh_tentative_predictions()
@@ -225,13 +230,11 @@ def _refresh_tentative_predictions():
     with get_session() as session:
         tentative = (
             session.query(TitleClassification)
-            .filter(
-                TitleClassification.human_label.is_(None),
-                TitleClassification.predicted_label.isnot(None),
-            )
+            .filter(TitleClassification.human_label.is_(None))
             .all()
         )
-        updated = 0
+        tree_updated = 0
+        svm_updated = 0
         for tc in tentative:
             prediction = title_classifier.predict(tc.title)
             if prediction:
@@ -239,8 +242,15 @@ def _refresh_tentative_predictions():
                 if new_label != tc.predicted_label:
                     tc.predicted_label = new_label
                     tc.predicted_score = new_score
-                    updated += 1
-        logger.info("Refreshed tentative predictions: %d/%d updated", updated, len(tentative))
+                    tree_updated += 1
+            svm_prediction = title_classifier.predict_svm(tc.title)
+            if svm_prediction:
+                new_label, new_score = svm_prediction
+                if new_label != tc.svm_predicted_label:
+                    tc.svm_predicted_label = new_label
+                    tc.svm_predicted_score = new_score
+                    svm_updated += 1
+        logger.info("Refreshed tentative predictions: tree=%d svm=%d / %d total", tree_updated, svm_updated, len(tentative))
 
 
 # ##################################################################
@@ -249,10 +259,11 @@ def _refresh_tentative_predictions():
 def _seed_rolling_history():
     global _last_rules_train_count
 
-    # load the sklearn decision tree model
+    # load both models
     title_classifier.load_model()
-    if not title_classifier.is_trained:
-        logger.info("No tree classifier available — tentative classification disabled until training runs")
+    title_classifier.load_svm_model()
+    if not title_classifier.is_trained and not title_classifier.is_svm_trained:
+        logger.info("No classifiers available — tentative classification disabled until training runs")
         return
     with get_session() as session:
         from sqlalchemy import func
@@ -266,7 +277,10 @@ def _seed_rolling_history():
         for tc in labeled:
             prediction = title_classifier.predict(tc.title)
             if prediction:
-                title_classifier.record_result(prediction[0], tc.human_label)
+                title_classifier.record_result(prediction[0], tc.human_label, model="tree")
+            svm_prediction = title_classifier.predict_svm(tc.title)
+            if svm_prediction:
+                title_classifier.record_result(svm_prediction[0], tc.human_label, model="svm")
 
         # initialize rules retrain baseline
         _last_rules_train_count = (
@@ -440,28 +454,33 @@ class ClassifyRequest(BaseModel):
 # trainer api cards
 # return 21 random unclassified feed entries for labeling (21 = divisible by 3 columns)
 @app.get("/trainer/api/cards")
-def trainer_cards():
+def trainer_cards(model: str = "tree"):
     with get_session() as session:
         from sqlalchemy import func
         from sqlalchemy.orm import joinedload
 
         import random
 
-        # draw from pre-classified tentative pool: 7 from each predicted_label
+        # pick which predicted_label column to band by
+        if model == "svm":
+            label_col = TitleClassification.svm_predicted_label
+        else:
+            label_col = TitleClassification.predicted_label
+
         tentative_base = (
             session.query(TitleClassification)
             .join(FeedEntry, TitleClassification.entry_id == FeedEntry.id)
             .options(joinedload(TitleClassification.entry).joinedload(FeedEntry.feed))
             .filter(
                 TitleClassification.human_label.is_(None),
-                TitleClassification.predicted_label.isnot(None),
+                label_col.isnot(None),
             )
         )
 
         bands = [
-            tentative_base.filter(TitleClassification.predicted_label == "great"),
-            tentative_base.filter(TitleClassification.predicted_label == "good"),
-            tentative_base.filter(TitleClassification.predicted_label == "other"),
+            tentative_base.filter(label_col == "great"),
+            tentative_base.filter(label_col == "good"),
+            tentative_base.filter(label_col == "other"),
         ]
 
         tcs = []
@@ -478,17 +497,29 @@ def trainer_cards():
                 if new_label != tc.predicted_label or new_score != tc.predicted_score:
                     tc.predicted_label = new_label
                     tc.predicted_score = new_score
+            svm_pred = title_classifier.predict_svm(tc.title)
+            if svm_pred:
+                new_label, new_score = svm_pred
+                if new_label != tc.svm_predicted_label or new_score != tc.svm_predicted_score:
+                    tc.svm_predicted_label = new_label
+                    tc.svm_predicted_score = new_score
 
         results = []
         for tc in tcs:
             entry = tc.entry
+            if model == "svm":
+                pred_label = tc.svm_predicted_label
+                pred_score = tc.svm_predicted_score
+            else:
+                pred_label = tc.predicted_label
+                pred_score = tc.predicted_score
             card = {
                 "id": tc.id,
                 "entry_id": entry.id,
                 "title": tc.title,
                 "feed_name": entry.feed.name if entry.feed else "Unknown",
-                "predicted_label": tc.predicted_label,
-                "predicted_confidence": round(tc.predicted_score, 2) if tc.predicted_score is not None else None,
+                "predicted_label": pred_label,
+                "predicted_confidence": round(pred_score, 2) if pred_score is not None else None,
             }
             results.append(card)
         return results
@@ -505,10 +536,13 @@ def trainer_classify(req: ClassifyRequest):
         tc = session.query(TitleClassification).filter(TitleClassification.id == req.id).first()
         if tc is None:
             raise HTTPException(status_code=404, detail="Classification entry not found")
-        # record prediction vs actual for rolling accuracy
+        # record prediction vs actual for rolling accuracy (both models)
         prediction = title_classifier.predict(tc.title)
         if prediction:
-            title_classifier.record_result(prediction[0], req.label)
+            title_classifier.record_result(prediction[0], req.label, model="tree")
+        svm_prediction = title_classifier.predict_svm(tc.title)
+        if svm_prediction:
+            title_classifier.record_result(svm_prediction[0], req.label, model="svm")
         tc.human_label = req.label
         tc.classified_at = datetime.now(timezone.utc)
     if req.label in ("great", "good"):
@@ -521,20 +555,35 @@ def trainer_classify(req: ClassifyRequest):
 # trainer api metrics
 # return current model training metrics
 @app.get("/trainer/api/metrics")
-def trainer_metrics():
+def trainer_metrics(model: str = "tree"):
     metrics = title_classifier.get_metrics()
     if metrics is None:
         with get_session() as session:
             count = session.query(TitleClassification).filter(TitleClassification.human_label.isnot(None)).count()
         return {"training_samples": count, "status": "not_trained"}
-    return metrics
+    # return model-specific rolling/history/backend based on query param
+    if model == "svm":
+        return {
+            "training_samples": metrics["training_samples"],
+            "last_trained": metrics["last_trained"],
+            "rolling": metrics.get("svm_rolling"),
+            "history": metrics.get("svm_history"),
+            "backend": metrics.get("svm_backend"),
+        }
+    return {
+        "training_samples": metrics["training_samples"],
+        "last_trained": metrics["last_trained"],
+        "rolling": metrics.get("rolling"),
+        "history": metrics.get("history"),
+        "backend": metrics.get("backend"),
+    }
 
 
 # ##################################################################
 # trainer api retrain
 # force a retrain of the sklearn classifier
 @app.post("/trainer/api/retrain")
-def trainer_retrain():
+def trainer_retrain(model: str = "tree"):
     import threading
 
     def _do_retrain():
@@ -543,9 +592,14 @@ def trainer_retrain():
             return
         _rules_training_lock = True
         try:
-            from src.classifier_trainer import train_tree
-            train_tree()
-            title_classifier.load_model()
+            if model == "svm":
+                from src.classifier_trainer import train_svm
+                train_svm()
+                title_classifier.load_svm_model()
+            else:
+                from src.classifier_trainer import train_tree
+                train_tree()
+                title_classifier.load_model()
             with get_session() as session:
                 from sqlalchemy import func
                 _last_rules_train_count = (
@@ -560,7 +614,7 @@ def trainer_retrain():
             _rules_training_lock = False
 
     threading.Thread(target=_do_retrain, daemon=True).start()
-    return {"status": "ok", "message": "Retrain started in background"}
+    return {"status": "ok", "message": f"Retrain ({model}) started in background"}
 
 
 # ##################################################################

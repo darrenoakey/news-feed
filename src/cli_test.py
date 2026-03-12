@@ -111,6 +111,8 @@ def test_export_rss_by_label():
                     title="Great Article",
                     predicted_label="great",
                     predicted_score=0.95,
+                    svm_predicted_label="great",
+                    svm_predicted_score=0.95,
                 )
                 session.add(tc1)
 
@@ -128,6 +130,8 @@ def test_export_rss_by_label():
                     title="Other Article",
                     predicted_label="other",
                     predicted_score=0.80,
+                    svm_predicted_label="other",
+                    svm_predicted_score=0.80,
                 )
                 session.add(tc2)
 

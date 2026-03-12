@@ -62,6 +62,8 @@ class TitleClassification(Base):
     human_label = Column(Text, nullable=True)
     predicted_label = Column(Text, nullable=True)
     predicted_score = Column(Float, nullable=True)
+    svm_predicted_label = Column(Text, nullable=True)
+    svm_predicted_score = Column(Float, nullable=True)
     classified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=utc_now)
 

@@ -2,13 +2,15 @@ import logging
 from pathlib import Path
 
 import joblib
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 MODEL_PATH = PROJECT_ROOT / "local" / "classifier_model.joblib"
+SVM_MODEL_PATH = PROJECT_ROOT / "local" / "svm_model.joblib"
 
 # error weights: how bad is each misclassification?
 ERROR_WEIGHTS = {
@@ -144,6 +146,42 @@ def train_tree():
     joblib.dump((vectorizer, tree), MODEL_PATH)
     print(f"Model saved to {MODEL_PATH}")
     print(f"  Tree depth: {tree.get_depth()}, leaves: {tree.get_n_leaves()}, features: {len(vectorizer.get_feature_names_out())}")
+
+
+# ##################################################################
+# train svm
+# train a TF-IDF + LinearSVC classifier on labeled data and save to disk
+def train_svm():
+    labeled = export_labeled_data()
+    total = sum(len(v) for v in labeled.values())
+    print(f"[SVM] Labeled data: {total} titles — great={len(labeled['great'])}, good={len(labeled['good'])}, other={len(labeled['other'])}")
+
+    if total < 10:
+        print("[SVM] Not enough labeled data to train. Label more titles first.")
+        return
+
+    titles = []
+    labels = []
+    for label in ("great", "good", "other"):
+        for title in labeled[label]:
+            titles.append(title)
+            labels.append(label)
+
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), sublinear_tf=True)
+    X = vectorizer.fit_transform(titles)
+
+    svm = LinearSVC(max_iter=10000)
+    svm.fit(X, labels)
+
+    predictions = svm.predict(X)
+    correct = sum(1 for p, a in zip(predictions, labels) if p == a)
+    accuracy = correct / len(labels)
+    print(f"[SVM] Training accuracy: {accuracy:.1%} ({correct}/{len(labels)})")
+
+    SVM_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump((vectorizer, svm), SVM_MODEL_PATH)
+    print(f"[SVM] Model saved to {SVM_MODEL_PATH}")
+    print(f"[SVM]   Features: {len(vectorizer.get_feature_names_out())}")
 
 
 # ##################################################################

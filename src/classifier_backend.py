@@ -12,6 +12,7 @@ SCORE_THRESHOLDS = {"great": 1.5, "good": 0.5}
 
 PROJECT_ROOT = Path(__file__).parent.parent
 MODEL_PATH = PROJECT_ROOT / "local" / "classifier_model.joblib"
+SVM_MODEL_PATH = PROJECT_ROOT / "local" / "svm_model.joblib"
 
 
 # ##################################################################
@@ -72,5 +73,46 @@ class TreeBackend:
             "type": "sklearn",
             "depth": int(self._tree.get_depth()),
             "leaves": int(self._tree.get_n_leaves()),
+            "features": int(len(self._vectorizer.get_feature_names_out())),
+        }
+
+
+# ##################################################################
+# SVM backend
+# loads a sklearn LinearSVC with TF-IDF vectorizer from a joblib file
+class SVMBackend:
+    def __init__(self):
+        self._vectorizer = None
+        self._svm = None
+        self.reload()
+
+    def reload(self):
+        try:
+            vectorizer, svm = joblib.load(SVM_MODEL_PATH)
+            self._vectorizer = vectorizer
+            self._svm = svm
+            logger.info("Loaded SVM backend: features=%d", len(vectorizer.get_feature_names_out()))
+        except Exception as err:
+            logger.warning("Failed to load SVM model from %s: %s", SVM_MODEL_PATH, err)
+            self._vectorizer = None
+            self._svm = None
+
+    @property
+    def available(self) -> bool:
+        return self._svm is not None
+
+    def classify(self, title: str) -> tuple[str, float]:
+        if self._vectorizer is None or self._svm is None:
+            raise RuntimeError("SVM backend not loaded")
+        X = self._vectorizer.transform([title])
+        label = self._svm.predict(X)[0]
+        return (label, LABEL_SCORES[label])
+
+    def info(self) -> dict:
+        if self._svm is None:
+            return {"name": "svm", "type": "sklearn", "status": "not_loaded"}
+        return {
+            "name": "svm",
+            "type": "sklearn-svm",
             "features": int(len(self._vectorizer.get_feature_names_out())),
         }
