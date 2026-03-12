@@ -40,6 +40,12 @@ RSS aggregator with ML-based title classification.
 
 - Feed database: `/Users/darrenoakey/src/news-feed/local/feeds.db`
 
+## Threading & Concurrency
+
+- Both background workers use `asyncio.to_thread()` for blocking I/O (HTTP requests, SQLAlchemy) — never block the event loop directly
+- `_seed_rolling_history` runs in a background thread on startup so the server accepts requests immediately
+- SQLite WAL mode enabled for concurrent reader/writer support across threads
+
 ## Auto Daemon
 
 Registered with `auto` using `.venv/bin/python` (not system python3) to prevent module import failures when system Python upgrades. If the service dies with `ModuleNotFoundError`, check that dependencies are installed in `.venv/`.
