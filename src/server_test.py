@@ -99,7 +99,7 @@ def test_delete_feed_not_found():
 
 # ##################################################################
 # test stats endpoint
-# verify stats returns expected fields including top_feeds_by_avg_score
+# verify stats returns expected fields
 def test_stats():
     for client in create_test_client():
         response = client.get("/stats")
@@ -108,5 +108,5 @@ def test_stats():
         assert "total_entries" in data
         assert "total_feeds" in data
         assert "top_feeds" in data
-        assert "top_feeds_by_avg_score" in data
-        assert isinstance(data["top_feeds_by_avg_score"], list)
+        assert "total_classified" in data
+        assert "total_labeled" in data

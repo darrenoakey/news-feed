@@ -20,7 +20,18 @@ def get_engine():
     global _engine
     if _engine is None:
         DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False)
+        _engine = create_engine(
+            f"sqlite:///{DATABASE_PATH}",
+            echo=False,
+            connect_args={"check_same_thread": False},
+        )
+        # enable WAL mode so concurrent readers/writers don't block each other
+        from sqlalchemy import event
+        @event.listens_for(_engine, "connect")
+        def _set_wal(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
     return _engine
 
 

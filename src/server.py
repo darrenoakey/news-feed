@@ -63,7 +63,7 @@ async def background_worker():
     logger.info("Background worker started")
     while True:
         try:
-            processed = await process_next_feed()
+            processed = await asyncio.to_thread(_process_next_feed)
             if not processed:
                 await asyncio.sleep(WORKER_SLEEP_SECONDS)
         except Exception as err:
@@ -74,7 +74,7 @@ async def background_worker():
 # ##################################################################
 # process next feed
 # find and process the next feed that needs checking, returns True if processed
-async def process_next_feed() -> bool:
+def _process_next_feed() -> bool:
     with get_session() as session:
         now = datetime.now(timezone.utc)
 
@@ -284,14 +284,15 @@ def _seed_rolling_history():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    _seed_rolling_history()
-    logger.info("Database initialized")
+    logger.info("Database initialized, seeding rolling history in background")
 
+    # seed in background so server starts accepting requests immediately
+    seed_task = asyncio.create_task(asyncio.to_thread(_seed_rolling_history))
     feed_task = asyncio.create_task(background_worker())
     tentative_task = asyncio.create_task(tentative_worker())
     yield
 
-    for task in [feed_task, tentative_task]:
+    for task in [seed_task, feed_task, tentative_task]:
         task.cancel()
         try:
             await task
